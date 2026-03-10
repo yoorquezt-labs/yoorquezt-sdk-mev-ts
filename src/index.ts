@@ -1,5 +1,6 @@
 export { QMEVClient } from './client';
 export { MEVGatewayClient } from './gateway';
+export { SettlementClient } from './settlement';
 export { streamChat } from './streaming';
 export { QMEVError, MEV_ERROR_CODES } from './errors';
 export {
@@ -31,3 +32,13 @@ export type {
   JsonRpcRequest,
   JsonRpcResponse,
 } from './types';
+export type {
+  AuctionDeposit,
+  AuctionResult,
+  RebateEpoch,
+  RebateClaim,
+  Intent,
+  IntentStatus,
+  SolverInfo,
+  SettlementClientConfig,
+} from './settlement';
