@@ -217,6 +217,29 @@ try {
 }
 ```
 
+## Testing
+
+The SDK includes 89 tests across 5 test suites:
+
+| Suite | Description |
+|-------|-------------|
+| `client` | QMEVClient HTTP interactions, chat, tool listing, health checks |
+| `gateway` | MEVGatewayClient JSON-RPC calls, bundle submission, simulation |
+| `errors` | QMEVError construction, error codes, serialization |
+| `streaming` | SSE streaming, token-by-token chat responses |
+| `utils` | Utility functions, parameter validation, type guards |
+
+```bash
+# Run all tests
+npm test
+
+# Verbose output with individual test names
+npx jest --verbose
+
+# Generate coverage report
+npx jest --coverage
+```
+
 ## Development
 
 ```bash

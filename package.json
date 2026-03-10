@@ -9,11 +9,18 @@
     "test": "jest",
     "lint": "eslint src/"
   },
-  "keywords": ["mev", "ethereum", "bundle", "flashbots", "yoorquezt"],
+  "keywords": [
+    "mev",
+    "ethereum",
+    "bundle",
+    "flashbots",
+    "yoorquezt"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@types/jest": "^29.5.0",
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^8.56.0",
