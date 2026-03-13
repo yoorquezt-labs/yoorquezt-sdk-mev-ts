@@ -352,3 +352,350 @@ describe('MEVGatewayClient URL handling', () => {
     );
   });
 });
+
+// --- WebSocket subscription and lifecycle tests ---
+
+import WebSocket from 'ws';
+
+const MockWebSocket = WebSocket as unknown as jest.Mock & {
+  OPEN: number;
+  CLOSED: number;
+  CONNECTING: number;
+  CLOSING: number;
+};
+
+// Set WebSocket static constants on the mock constructor so gateway.ts comparisons work
+MockWebSocket.OPEN = 1;
+MockWebSocket.CLOSED = 3;
+MockWebSocket.CONNECTING = 0;
+MockWebSocket.CLOSING = 2;
+
+/**
+ * Helper: create a gateway, call subscribe() to trigger ensureWebSocket(),
+ * and return the mock ws instance along with captured event handlers.
+ */
+function setupWsGateway(apiKey?: string) {
+  MockWebSocket.mockClear();
+
+  const gw = makeGateway(apiKey);
+  const handlers: Record<string, (...args: any[]) => void> = {};
+  const onceHandlers: Record<string, (...args: any[]) => void> = {};
+
+  // Re-configure the next mock instance
+  MockWebSocket.mockImplementation((() => {
+    const instance = {
+      readyState: 1, // OPEN
+      send: jest.fn(),
+      on: jest.fn((event: string, cb: (...args: any[]) => void) => {
+        handlers[event] = cb;
+      }),
+      once: jest.fn((event: string, cb: (...args: any[]) => void) => {
+        onceHandlers[event] = cb;
+      }),
+      close: jest.fn(),
+      removeAllListeners: jest.fn(),
+    };
+    return instance;
+  }) as any);
+
+  return { gw, handlers, onceHandlers, getMockWs: () => MockWebSocket.mock.results[0]?.value };
+}
+
+describe('MEVGatewayClient.subscribe', () => {
+  it('sends mev_subscribe JSON-RPC request when ws is OPEN', () => {
+    const { gw, getMockWs } = setupWsGateway();
+    const onEvent = jest.fn();
+
+    gw.subscribe(['auctions', 'bundles'], onEvent);
+
+    const ws = getMockWs();
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(ws.send.mock.calls[0][0]);
+    expect(sent.jsonrpc).toBe('2.0');
+    expect(sent.method).toBe('mev_subscribe');
+    expect(sent.params[0].topics).toEqual(['auctions', 'bundles']);
+    expect(sent.params[0].subscriptionId).toMatch(/^sub_/);
+  });
+
+  it('returns an unsubscribe function that sends mev_unsubscribe', () => {
+    const { gw, getMockWs } = setupWsGateway();
+    const onEvent = jest.fn();
+
+    const unsub = gw.subscribe(['auctions'], onEvent);
+    const ws = getMockWs();
+
+    // First call was mev_subscribe
+    expect(ws.send).toHaveBeenCalledTimes(1);
+
+    // Call unsubscribe
+    unsub();
+
+    expect(ws.send).toHaveBeenCalledTimes(2);
+    const sent = JSON.parse(ws.send.mock.calls[1][0]);
+    expect(sent.method).toBe('mev_unsubscribe');
+    expect(sent.params[0]).toMatch(/^sub_/);
+  });
+
+  it('defers subscribe until ws open event when not yet OPEN', () => {
+    MockWebSocket.mockClear();
+    const gw = makeGateway();
+    const onceHandlers: Record<string, (...args: any[]) => void> = {};
+
+    MockWebSocket.mockImplementation((() => ({
+      readyState: 0, // CONNECTING
+      send: jest.fn(),
+      on: jest.fn(),
+      once: jest.fn((event: string, cb: (...args: any[]) => void) => {
+        onceHandlers[event] = cb;
+      }),
+      close: jest.fn(),
+      removeAllListeners: jest.fn(),
+    })) as any);
+
+    const onEvent = jest.fn();
+    gw.subscribe(['auctions'], onEvent);
+
+    const ws = MockWebSocket.mock.results[0]?.value;
+    // Should NOT have sent yet (ws is CONNECTING)
+    expect(ws.send).not.toHaveBeenCalled();
+    // Should have registered a once('open') handler
+    expect(onceHandlers['open']).toBeDefined();
+
+    // Simulate open — update readyState then fire open callback
+    ws.readyState = 1; // OPEN
+    onceHandlers['open']();
+    expect(ws.send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MEVGatewayClient subscription notifications', () => {
+  it('dispatches subscription notification to correct handler', () => {
+    const { gw, handlers } = setupWsGateway();
+    const onEvent = jest.fn();
+
+    gw.subscribe(['auctions'], onEvent);
+
+    // Get the subscriptionId from the sent message
+    const ws = MockWebSocket.mock.results[0]?.value;
+    const sent = JSON.parse(ws.send.mock.calls[0][0]);
+    const subId = sent.params[0].subscriptionId;
+
+    // Simulate incoming subscription notification
+    const event = { type: 'auction_update', data: { block: 100 }, timestamp: 1700000000 };
+    const notification = JSON.stringify({
+      method: 'mev_subscription',
+      params: { subscriptionId: subId, event },
+    });
+    handlers['message'](notification);
+
+    expect(onEvent).toHaveBeenCalledWith(event);
+  });
+
+  it('ignores notifications for unknown subscription IDs', () => {
+    const { gw, handlers } = setupWsGateway();
+    const onEvent = jest.fn();
+
+    gw.subscribe(['auctions'], onEvent);
+
+    const notification = JSON.stringify({
+      method: 'mev_subscription',
+      params: { subscriptionId: 'sub_unknown', event: { type: 'x', data: {}, timestamp: 0 } },
+    });
+    handlers['message'](notification);
+
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('ignores malformed messages without crashing', () => {
+    const { gw, handlers } = setupWsGateway();
+    gw.subscribe(['auctions'], jest.fn());
+
+    expect(() => handlers['message']('not valid json {')).not.toThrow();
+  });
+});
+
+describe('MEVGatewayClient.disconnect with active WebSocket', () => {
+  it('calls removeAllListeners, close, and nulls the ws', () => {
+    const { gw, getMockWs } = setupWsGateway();
+    gw.subscribe(['auctions'], jest.fn());
+
+    const ws = getMockWs();
+    gw.disconnect();
+
+    expect(ws.removeAllListeners).toHaveBeenCalled();
+    expect(ws.close).toHaveBeenCalled();
+  });
+
+  it('rejects pending calls with WS_DISCONNECTED error', () => {
+    const { gw, handlers } = setupWsGateway();
+    gw.subscribe(['auctions'], jest.fn());
+
+    // Manually add a pending call by accessing internals
+    // We can do this by simulating an RPC call over WS that hasn't resolved yet
+    const pendingCalls = (gw as any).pendingCalls as Map<
+      number,
+      { resolve: (v: unknown) => void; reject: (e: Error) => void }
+    >;
+    const rejectFn = jest.fn();
+    pendingCalls.set(99, { resolve: jest.fn(), reject: rejectFn });
+
+    gw.disconnect();
+
+    expect(rejectFn).toHaveBeenCalledTimes(1);
+    const err = rejectFn.mock.calls[0][0];
+    expect(err).toBeInstanceOf(QMEVError);
+    expect(err.code).toBe('WS_DISCONNECTED');
+  });
+});
+
+describe('MEVGatewayClient.ensureWebSocket', () => {
+  it('reuses existing open connection', () => {
+    const { gw } = setupWsGateway();
+
+    // First subscribe creates the WS
+    gw.subscribe(['auctions'], jest.fn());
+    expect(MockWebSocket).toHaveBeenCalledTimes(1);
+
+    // Second subscribe should reuse
+    gw.subscribe(['bundles'], jest.fn());
+    expect(MockWebSocket).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates connection with auth header when apiKey provided', () => {
+    const { gw } = setupWsGateway('my-secret-key');
+
+    gw.subscribe(['auctions'], jest.fn());
+
+    expect(MockWebSocket).toHaveBeenCalledWith(
+      'ws://localhost:9099',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer my-secret-key',
+        }),
+      }),
+    );
+  });
+
+  it('creates connection without auth header when no apiKey', () => {
+    const { gw } = setupWsGateway();
+
+    gw.subscribe(['auctions'], jest.fn());
+
+    expect(MockWebSocket).toHaveBeenCalledWith(
+      'ws://localhost:9099',
+      expect.objectContaining({
+        headers: {},
+      }),
+    );
+  });
+});
+
+describe('MEVGatewayClient RPC response handling over WebSocket', () => {
+  it('resolves pending call on successful RPC response', () => {
+    const { gw, handlers } = setupWsGateway();
+    gw.subscribe(['auctions'], jest.fn());
+
+    const pendingCalls = (gw as any).pendingCalls as Map<
+      number,
+      { resolve: (v: unknown) => void; reject: (e: Error) => void }
+    >;
+    const resolveFn = jest.fn();
+    pendingCalls.set(42, { resolve: resolveFn, reject: jest.fn() });
+
+    handlers['message'](JSON.stringify({ id: 42, result: { status: 'ok' } }));
+
+    expect(resolveFn).toHaveBeenCalledWith({ status: 'ok' });
+    expect(pendingCalls.has(42)).toBe(false);
+  });
+
+  it('rejects pending call on RPC error response', () => {
+    const { gw, handlers } = setupWsGateway();
+    gw.subscribe(['auctions'], jest.fn());
+
+    const pendingCalls = (gw as any).pendingCalls as Map<
+      number,
+      { resolve: (v: unknown) => void; reject: (e: Error) => void }
+    >;
+    const rejectFn = jest.fn();
+    pendingCalls.set(43, { resolve: jest.fn(), reject: rejectFn });
+
+    handlers['message'](JSON.stringify({
+      id: 43,
+      error: { code: -32600, message: 'Invalid Request' },
+    }));
+
+    expect(rejectFn).toHaveBeenCalledTimes(1);
+    const err = rejectFn.mock.calls[0][0];
+    expect(err).toBeInstanceOf(QMEVError);
+    expect(err.code).toBe('RPC_-32600');
+    expect(pendingCalls.has(43)).toBe(false);
+  });
+
+  it('ignores RPC response with no matching pending call', () => {
+    const { gw, handlers } = setupWsGateway();
+    gw.subscribe(['auctions'], jest.fn());
+
+    // Should not throw
+    expect(() =>
+      handlers['message'](JSON.stringify({ id: 999, result: 'orphan' })),
+    ).not.toThrow();
+  });
+});
+
+describe('MEVGatewayClient auto-reconnection', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('reconnects after close when there are active subscriptions', () => {
+    const { gw, handlers } = setupWsGateway();
+    gw.subscribe(['auctions'], jest.fn());
+
+    expect(MockWebSocket).toHaveBeenCalledTimes(1);
+
+    // Mark the first ws as CLOSED so ensureWebSocket creates a new one
+    const firstWs = MockWebSocket.mock.results[0]?.value;
+    firstWs.readyState = WebSocket.CLOSED;
+
+    // Simulate close event
+    handlers['close']();
+
+    // Advance timers past the 3-second reconnect delay
+    jest.advanceTimersByTime(3000);
+
+    expect(MockWebSocket).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not reconnect when no active subscriptions', () => {
+    const { gw, handlers } = setupWsGateway();
+    const unsub = gw.subscribe(['auctions'], jest.fn());
+
+    // Remove subscription before close
+    unsub();
+
+    const firstWs = MockWebSocket.mock.results[0]?.value;
+    firstWs.readyState = WebSocket.CLOSED;
+
+    handlers['close']();
+    jest.advanceTimersByTime(3000);
+
+    // Should NOT have created a second connection
+    expect(MockWebSocket).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MEVGatewayClient error event', () => {
+  it('handles error event without crashing', () => {
+    const { gw, handlers } = setupWsGateway();
+    // Trigger ensureWebSocket so event handlers are registered
+    gw.subscribe(['auctions'], jest.fn());
+
+    // error handler just exists to prevent unhandled errors; close handles cleanup
+    expect(handlers['error']).toBeDefined();
+    expect(() => handlers['error'](new Error('connection reset'))).not.toThrow();
+  });
+});

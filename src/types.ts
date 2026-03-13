@@ -1,5 +1,42 @@
 // --- Core types for Q MEV AI SDK ---
 
+export type SupportedChain =
+  | 'ethereum' | 'arbitrum' | 'base' | 'optimism' | 'polygon'
+  | 'bsc' | 'avalanche' | 'zksync'
+  | 'hyperliquid' | 'monad' | 'berachain' | 'sei' | 'megaeth' | 'unichain'
+  | 'solana' | 'sui'
+  | 'injective' | 'osmosis';
+
+export type ChainType = 'evm' | 'solana' | 'sui' | 'cosmos';
+
+export interface ChainInfo {
+  name: SupportedChain;
+  type: ChainType;
+  chainId?: number;
+  testnetRpc?: string;
+}
+
+export const SUPPORTED_CHAINS: ChainInfo[] = [
+  { name: 'ethereum', type: 'evm', chainId: 1 },
+  { name: 'arbitrum', type: 'evm', chainId: 42161 },
+  { name: 'base', type: 'evm', chainId: 8453 },
+  { name: 'optimism', type: 'evm', chainId: 10 },
+  { name: 'polygon', type: 'evm', chainId: 137 },
+  { name: 'bsc', type: 'evm', chainId: 56 },
+  { name: 'avalanche', type: 'evm', chainId: 43114 },
+  { name: 'zksync', type: 'evm', chainId: 324 },
+  { name: 'hyperliquid', type: 'evm', chainId: 998 },
+  { name: 'monad', type: 'evm', chainId: 10143 },
+  { name: 'berachain', type: 'evm', chainId: 80069 },
+  { name: 'sei', type: 'evm', chainId: 1329 },
+  { name: 'megaeth', type: 'evm', chainId: 18233 },
+  { name: 'unichain', type: 'evm', chainId: 130 },
+  { name: 'solana', type: 'solana' },
+  { name: 'sui', type: 'sui' },
+  { name: 'injective', type: 'cosmos' },
+  { name: 'osmosis', type: 'cosmos' },
+];
+
 export interface Bundle {
   id: string;
   transactions: string[];
